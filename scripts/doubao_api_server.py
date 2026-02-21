@@ -34,7 +34,7 @@ class DivinationRequest(BaseModel):
     numbers: str
 
 # 豆包API配置
-DOUBAO_API_URL = os.getenv("COZE_INTEGRATION_MODEL_BASE_URL", "https://integration.coze.cn/api/v3")
+DOUBAO_API_URL = os.getenv("DOUBAO_API_URL", "https://ark.cn-beijing.volces.com/api/v3")
 DOUBAO_API_KEY = os.getenv("COZE_WORKLOAD_IDENTITY_API_KEY")
 DOUBAO_MODEL = "doubao-seed-2-0-pro-260215"  # 默认模型
 
