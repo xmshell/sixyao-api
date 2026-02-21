@@ -141,7 +141,13 @@ async def divine(request: DivinationRequest):
             )
 
             if response.status_code == 200:
-                result = response.json()
+                try:
+                    result = response.json()
+                    logger.info(f"豆包AI解析JSON成功")
+                 except Exception as e:
+                    logger.error(f"豆包API响应JSON解析失败: {str(e)}, 原始响应: {response.text}")
+                    raise HTTPException(status_code=500, detail=f"API返回格式错误: {str(e)}")
+
                 logger.info("豆包AI调用成功")
 
                 # 提取内容
