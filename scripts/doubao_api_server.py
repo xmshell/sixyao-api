@@ -89,27 +89,12 @@ async def divine(request: DivinationRequest):
             model = DOUBAO_MODEL
             temperature = 0.7
 
-        # 构建系统提示词
-        system_prompt = """你是专业的六爻解卦大师，精通传统六爻理论和实践。
+        # 构建系统提示词（精简版，优化token消耗）
+        system_prompt = """你是六爻解卦大师。
 
-请按照以下步骤进行解卦：
-1. 根据用户提供的6个数字起卦
-2. 分析卦象的组成（上卦、下卦、变卦）
-3. 解读卦辞和爻辞
-4. 分析五行生克关系
-5. 定位用神并分析其旺衰
-6. 解读六神配置
-7. 分析动爻的影响
-8. 给出运势判断（短期、中期、长期）
-9. 提供实用的建议
+根据6个数字起卦，分析：卦名、卦辞、五行、用神、六亲、六神、动爻、运势判断、建议。
 
-输出格式要求：
-- 专业但通俗易懂
-- 使用清晰的分段和小标题
-- 包含详细的卦象分析
-- 必须包含免责声明
-
-免责声明内容：⚠️ 免责声明：此解卦结果仅供参考，不构成任何决策依据。"""
+格式：专业通俗，分段清晰。必须含免责声明：⚠️ 仅供参考，不构成决策依据。"""
 
         # 构建用户提示词
         user_prompt = f"""请为以下问题进行六爻解卦：
@@ -136,15 +121,18 @@ async def divine(request: DivinationRequest):
                         {"role": "user", "content": user_prompt}
                     ],
                     "temperature": temperature,
-                    "max_tokens": 8000
+                    "max_tokens": 2000
                 }
             )
+
+            logger.info(f"豆包API响应状态码: {response.status_code}")
+            logger.info(f"豆包API响应内容: {response.text[:500]}")
 
             if response.status_code == 200:
                 try:
                     result = response.json()
                     logger.info(f"豆包AI解析JSON成功")
-                 except Exception as e:
+                except Exception as e:
                     logger.error(f"豆包API响应JSON解析失败: {str(e)}, 原始响应: {response.text}")
                     raise HTTPException(status_code=500, detail=f"API返回格式错误: {str(e)}")
 
