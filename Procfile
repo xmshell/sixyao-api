@@ -1,1 +1,1 @@
-web: python scripts/doubao_api_server.py
+web: python scripts/simple_api_server.py
