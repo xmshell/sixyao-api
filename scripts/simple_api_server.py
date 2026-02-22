@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import os
 import httpx
 import logging
+import asyncio
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -10,95 +11,109 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="六爻解卦API")
 
-# 修正1：简化请求参数，仅保留question（匹配小程序只传question的需求）
+# 简化请求参数，仅保留question
 class DivinationRequest(BaseModel):
-    question: str  # 仅要求问题字段，移除numbers强制要求
+    question: str
 
-# 扣子API配置（保持不变）
-COZE_API_URL = os.getenv("COZE_API_URL", "https://api.coze.cn/open_api/v2/chat")
+# 扣子API配置（升级为V3接口，更稳定）
+COZE_API_URL = os.getenv("COZE_API_URL", "https://api.coze.cn/v3/chat/completions")
 COZE_API_KEY = os.getenv("COZE_WORKLOAD_IDENTITY_API_KEY")
 COZE_BOT_ID = os.getenv("COZE_BOT_ID", "7608224310687432710")
 
-# 修正2：健康检查返回统一的healthy，保持验证一致性
+# 健康检查接口
 @app.get("/health")
 async def health():
     return {
-        "status": "healthy",  # 改为healthy，和之前验证逻辑匹配
+        "status": "healthy",
         "message": "六爻解卦API服务运行中（扣子平台版本）",
         "version": "1.0.0",
         "api_key_configured": COZE_API_KEY is not None,
         "bot_id_configured": COZE_BOT_ID is not None
     }
 
-# 修正3：接口路径改为 /divine（匹配小程序请求路径，解决404）
+# 核心解卦接口（添加故障处理+重试+友好提示）
 @app.post("/divine")
-async def divine(request: DivinationRequest = Body(...)):
-    """调用扣子智能体进行解卦（适配小程序：仅传question，返回最终结果）"""
+async def divine(request: DivinationRequest = Body(...), retry_times: int = 2):
+    """调用扣子智能体解卦，兼容平台故障，返回友好提示"""
     try:
-        logger.info(f"收到解卦请求 - 问题: {request.question}")
-
-        # 验证输入（仅验证问题非空）
+        # 验证输入
         if not request.question or not request.question.strip():
             raise HTTPException(status_code=400, detail="问题不能为空")
-
+        
         # 检查API密钥
         if not COZE_API_KEY:
-            raise HTTPException(status_code=500, detail="扣子API密钥未配置")
+            raise HTTPException(status_code=500, detail="后台API密钥未配置，请联系管理员")
 
-        # 精简用户消息（仅传递问题，符合你的核心需求）
+        # 构造用户消息
         user_message = f"问题：{request.question}\n解卦"
-
-        logger.info("正在调用扣子智能体...")
-
-        # 调用扣子API
+        
+        # 调用扣子API（带重试机制）
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                COZE_API_URL,
-                headers={
-                    "Authorization": f"Bearer {COZE_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "bot_id": COZE_BOT_ID,
-                    "user": f"wx_user_{os.urandom(4).hex()}",  # 随机用户ID，避免冲突
-                    "query": user_message,
-                    "stream": False,
-                    "max_tokens": 1000
-                }
-            )
+            for retry in range(retry_times + 1):
+                try:
+                    logger.info(f"调用扣子API（第{retry+1}次）- 问题: {request.question}")
+                    response = await client.post(
+                        COZE_API_URL,
+                        headers={
+                            "Authorization": f"Bearer {COZE_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "bot_id": COZE_BOT_ID,
+                            "messages": [{"role": "user", "content": user_message}],  # V3接口格式
+                            "stream": False,
+                            "max_tokens": 2000
+                        }
+                    )
 
-            logger.info(f"扣子API响应: {response.status_code}")
-
-            if response.status_code == 200:
-                result = response.json()
-
-                # 提取回复内容（仅取智能体最终answer）
-                if "messages" in result and len(result["messages"]) > 0:
-                    for msg in reversed(result["messages"]):
-                        if msg.get("type") == "answer":
-                            content = msg.get("content", "")
+                    # 处理响应
+                    if response.status_code == 200:
+                        result = response.json()
+                        
+                        # 处理扣子平台故障（702242002错误）
+                        if "code" in result and result["code"] != 0:
+                            raise Exception(f"扣子平台故障：{result.get('msg', '未知错误')}")
+                        
+                        # 提取V3接口的有效结果
+                        if "choices" in result and len(result["choices"]) > 0:
+                            content = result["choices"][0]["message"]["content"]
                             if content:
-                                logger.info("解卦成功！")
                                 return {
                                     "success": True,
-                                    "final_result": content  # 字段名匹配小程序端的接收逻辑
+                                    "final_result": content
                                 }
+                        else:
+                            raise Exception("扣子返回无有效结果")
+                    
+                    # 非200状态码重试
+                    elif retry < retry_times:
+                        logger.warning(f"接口返回{response.status_code}，{2**retry}秒后重试...")
+                        await asyncio.sleep(2**retry)  # 指数退避重试
+                    else:
+                        raise Exception(f"扣子API返回错误状态码：{response.status_code}")
+                
+                except httpx.RequestError as e:
+                    if retry < retry_times:
+                        logger.warning(f"网络错误：{str(e)}，{2**retry}秒后重试...")
+                        await asyncio.sleep(2**retry)
+                    else:
+                        raise Exception(f"网络请求失败：{str(e)}")
 
-                logger.warning(f"扣子返回无效: {result}")
-                raise HTTPException(status_code=500, detail="AI返回无效结果")
-            else:
-                error_detail = response.text
-                logger.error(f"扣子API错误: {response.status_code} - {error_detail}")
-                raise HTTPException(status_code=response.status_code, detail=error_detail)
+        # 所有重试失败
+        raise Exception("多次调用扣子API失败，请稍后再试")
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"解卦失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"解卦失败: {str(e)}")
+        # 不返回500，而是返回200+友好提示，避免小程序端报错
+        return {
+            "success": False,
+            "final_result": f"暂时无法为你解卦：{str(e)}\n请稍后重试，或检查网络连接",
+            "error_detail": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
-    # 修正4：适配Render的PORT环境变量（不再硬编码8000）
-    port = int(os.getenv("PORT", 8000))  # 优先读取Render分配的PORT，兜底8000
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
